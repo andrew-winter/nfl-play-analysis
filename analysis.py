@@ -5,15 +5,13 @@ import re
 import requests
 import sqlite3
 from bs4 import BeautifulSoup
-from download_nflverse_csv import download_nflverse_csv
-from read_nflverse_dictionary import read_nflverse_dictionary
+from scripts.download_nflverse_csv import download_nflverse_csv
+from scripts.read_nflverse_dictionary import read_nflverse_dictionary
 
 # %%
 # Constants
-wd = os.environ.get('NFLVERSE_PBP_WORKING_DIRECTORY')
-os.chdir(wd)
 nflverse_url = 'https://github.com/nflverse/nflverse-data/releases/download'
-#connection = sqlite3.connect(f'{wd}\data\dbs\pbp_1999-2024.sqlite')
+#connection = sqlite3.connect('data\dbs\pbp.sqlite')
 
 # %%
 # Dictionary comprehension to map dtypes to field names
