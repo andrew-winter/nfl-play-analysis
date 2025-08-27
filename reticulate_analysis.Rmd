@@ -1,0 +1,545 @@
+---
+title: "reticulate_analysis"
+author: "Andrew Winter"
+date: "2025-08-12"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## NFL play analysis
+
+Load R and Python packages
+
+```{r packages, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(reticulate)
+library(stringr)
+```
+
+```{python modules, message=FALSE}
+import json
+import os
+import pandas as pd
+import re
+import requests
+from bs4 import BeautifulSoup
+from scripts.read_nflverse_dictionary import read_nflverse_dictionary
+```
+
+
+Use existing Python code to request the play-by-play data dictionary
+
+```{python dictionary}
+data_dictionary = read_nflverse_dictionary()
+# Dictionary comprehension to map data types to field names
+pbp_dtypes = {
+  dy["field"]: dy["pdtype"]
+  for dy
+  in data_dictionary.to_dict("records")}
+# Record data dictionary
+data_dictionary[["field", "desc"]].to_csv(f"data/data_dictionary_{pd.Timestamp.now().strftime('%Y-%m-%d')}.csv")
+```
+
+
+And convert that data dictionary from a `pandas` dataframe to a `dplyr` tibble
+
+```{r initial py_to_r}
+# Initial conversion of data dictionary from Python to R
+data_dictionary <- py$data_dictionary |> 
+  reticulate::py_to_r() |> 
+  dplyr::as_tibble()
+pbp_dtypes <- py$pbp_dtypes
+```
+
+
+Set up metadata for a play-by-play dataframe, `pbp_df`
+
+```{python metadata}
+year_min = 2021
+year_max = 2024
+pbp_df = pd.DataFrame()
+# Reduce hundreds of columns to tens
+pbp_columns = [
+    "time", "play_type", "quarter_seconds_remaining", "desc",
+    "yardline_100", "ydstogo", "yards_gained", "yrdln",
+    "side_of_field", "down", "drive", "qtr", "game_date",
+    "week", "season_type", "season", "game_id", "play_id",
+    
+    "passer", "complete_pass", "pass_attempt", "passing_yards",
+    "pass", "incomplete_pass", "air_yards", "yards_after_catch",
+    "qb_dropback", "qb_kneel", "qb_spike", "qb_scramble", "pass_location",
+    "receiver", "receiving_yards",
+    "interception", "sack",
+    
+    "rusher", "rush_attempt",  "rushing_yards", "rush",
+    
+    "timeout", "timeout_team",
+    "penalty", "penalty_team", "penalty_yards", "first_down_penalty",
+    "posteam", "defteam", "home_team", "away_team",
+    "home_timeouts_remaining", "away_timeouts_remaining",
+    "wp", "def_wp",
+    
+    "kicker_player_name", "kick_distance",
+    "kickoff_attempt", "kickoff_returner_player_name",
+    
+    "posteam_score", "defteam_score",
+    "posteam_score_post", "defteam_score_post",
+    "sp", "touchdown", "td_team",
+    "pass_touchdown", "rush_touchdown", "td_player_name",
+    "field_goal_attempt", "field_goal_result",
+    "extra_point_attempt", "extra_point_result",
+    "two_point_attempt", "two_point_conv_result"]
+```
+
+
+Fill `pbp_df` by iterating through files, reading each csv, and concatenating into one big dataframe
+
+```{python iterate read_csv}
+for yr in range(year_min, year_max + 1):
+    file = os.path.join(os.getcwd(), "data", "pbp", f"play_by_play_{yr}.csv")
+    # Collected data dictionary in part to map `pandas` dtypes
+    df = pd.read_csv(file, dtype=pbp_dtypes, usecols=pbp_columns)
+    pbp_df = pd.concat([pbp_df, df], ignore_index=True)
+```
+
+
+Convert to another tibble for further analysis, first with some
+`dplyr` operations and later `ggplot2` viz
+
+```{r pbp py_to_r}
+pbp_df <- py$pbp_df |> 
+  reticulate::py_to_r() |> 
+  dplyr::as_tibble() |> 
+  dplyr::relocate(
+    reticulate::py_to_r(py$pbp_columns))
+```
+
+
+Check passing stats against each other
+
+```{r passing comparison}
+# Various combinations of pass and pass attempt, so check each
+pbp_df |> 
+  dplyr::select(pass, pass_attempt) |> 
+  dplyr::group_by(pass, pass_attempt) |> 
+  dplyr::count() |> 
+  dplyr::arrange(desc(n))
+
+#   pass pass_attempt      n
+#   <dbl>       <dbl>  <int>
+# 1  0            0 269554    runs, special teams, timeouts, QB kneels, penalt
+# 2  1            1 222229    pass plays (including penalties & 2 pt attempts)
+# 3  1            0  22522    mostly pass plays with penalty or QB scrambles
+# 4  0          NaN  15733    mostly start + end of quarters, some penalties
+# 5  0            1    780    spikes
+# 6  1          NaN    414    penalties
+
+pbp_df |> 
+  dplyr::filter(pass == 0 & pass_attempt == 0) |> 
+  dplyr::select(play_type) |> 
+  dplyr::group_by(play_type) |> 
+  dplyr::count() |> 
+  dplyr::arrange(desc(n))
+```
+
+
+```{r pass filtering}
+# Will combining the filters without penalties be enough?
+# penalty == 0      477358
+# penalty == 1      37727
+# is.na(penalty)    16147
+pbp_df |> 
+  dplyr::group_by(penalty) |> 
+  dplyr::select(penalty) |> 
+  dplyr::count() |> 
+  dplyr::arrange(desc(n))
+
+# `pass_attempt` and no penalties should determine legitimate pass attempts
+# There are some plays where pass_attempt == 1 & pass == 0, but these are
+# spikes and therefore should count as pass attempts
+pbp_df |> 
+  dplyr::filter(pass_attempt == 1 & penalty == 0) |> 
+  select("yardline_100", "ydstogo", "yards_gained", "yrdln")
+```
+
+
+```{r plays grouped}
+# Group by every single play
+# group_by(season, season_type, game_id, qtr, drive, play_id, play_type, desc)
+pbp_grouped <- pbp_df |> 
+  dplyr::group_by(
+    season, season_type, game_id, qtr,
+    time, drive, play_id, play_type, desc) |> 
+  dplyr::select(
+    season_type, game_id,
+    qtr, time, drive, play_id, play_type, desc) |> 
+  dplyr::arrange(game_id, play_id)
+```
+
+
+```{r look through plays}
+pbp_grouped |> 
+  dplyr::ungroup() |> 
+  #dplyr::select() |>
+  dplyr::filter(game_id == "2023_21_KC_BAL") |>  # Alt: 2024_01_BAL_KC
+  base::print()
+#purrr::map_chr(pbp_grouped$desc, print)
+#tidyr::pivot_wider(names_from = cols_to_pivot, values_from = vals_to_pivot)
+```
+
+
+Determine which values to filter out to get to passing stats
+
+```{r}
+pbp_df |> 
+  dplyr::filter(pass_attempt == 1 | play_type == "pass") |> 
+  dplyr::group_by(passer, game_id) |> 
+  dplyr::summarize(
+    pass_att = sum(pass_attempt),
+    pass_comp = sum(complete_pass),
+    pass_yards = sum(passing_yards)) |> 
+  dplyr::arrange(desc(pass_att))
+```
+
+
+By updating passing_yards NAs to zeroes, can aggregate stats per passer per game
+
+```{r}
+pbp_df |> 
+  dplyr::filter(
+    passer == "P.Mahomes"
+    & season == 2023) |> 
+  dplyr::group_by(pass_attempt, play_type, penalty) |> 
+  dplyr::select(pass_attempt, play_type, penalty) |> 
+  dplyr::count() |> 
+  dplyr::arrange(n)
+
+#   pass_attempt play_type penalty     n
+#          <dbl> <chr>       <dbl> <int>
+# 1            0 run             1     3    scramble, penalty enforced at end
+# 2          NaN no_play       NaN     3
+# 3            1 pass            1    11
+# 4            0 no_play         1    51
+# 5            0 run             0    60
+# 6            1 pass            0   765
+
+df <- pbp_df |> 
+  dplyr::filter(
+    passer == "P.Mahomes"
+    & season == 2023) |> 
+  dplyr::filter(
+    pass_attempt == 0
+    & play_type == "run"
+    & penalty == 1) |> 
+  dplyr::select(
+    pass_attempt, play_type, penalty, penalty_yards, yards_gained,
+    yrdln, yardline_100, penalty_team, desc)
+
+df
+```
+
+
+Attempt to draw a football field
+
+```{r start to draw field}
+# Measurements in feet
+field_length   <- 300
+field_width    <- 160
+endzone_length <- 30
+total_length   <- field_length + (endzone_length * 2)
+hash_distance  <- 70.75
+numbers_distance <- 36
+
+# Draw outlines of the field: the field boundaries and the goal lines
+field_measurements <- 
+  rbind(
+    c("boundary_north", 0, total_length, 0, 0),
+    c("boundary_south", 0, total_length, field_width, field_width),
+    c("boundary_east", total_length, total_length, 0, field_width),
+    c("boundary_west", 0, 0, 0, field_width),
+    c("goal_line_east", field_length + endzone_length,
+      field_length + endzone_length, 0, field_width),
+    c("goal_line_west", endzone_length, endzone_length, 0, field_width)) |> 
+  dplyr::as_tibble() |> 
+  dplyr::rename(line = V1, xmin = V2, xmax = V3, ymin = V4, ymax = V5) |> 
+  dplyr::mutate(across(!line, as.double))
+
+# Yard lines every five yards
+widthwise_lines <-
+  dplyr::tibble(
+    line = "yard_line",
+    xmin = seq(endzone_length, field_length + endzone_length, by = 15),
+    xmax = xmin,
+    ymin = 0,
+    ymax = field_width) |> 
+  dplyr::mutate(across(!line, as.double))
+
+# Hash marks every yard, 70 ft 9 in from the sidelines and 2 ft long
+hash_lines <-
+  dplyr::tibble(
+    line = "hash_mark",
+    xmin = seq(endzone_length, field_length + endzone_length, by = 3),
+    xmax = xmin,
+    ymin = rep(hash_distance - 1.4, 101),
+    ymax = rep(hash_distance + 1.4, 101)) |> 
+  dplyr::bind_rows(
+    # Opposite side of the middle of the field
+    dplyr::tibble(
+      line = "hash_mark",
+      xmin = seq(endzone_length, field_length + endzone_length, by = 3),
+      xmax = xmin,
+      ymin = rep(field_width - hash_distance - 1.4, 101),
+      ymax = rep(field_width - hash_distance + 1.4, 101))) |> 
+    dplyr::bind_rows(
+      # North side of the field
+      dplyr::tibble(
+        line = "hash_mark",
+        xmin = seq(endzone_length, field_length + endzone_length, by = 3),
+        xmax = xmin,
+        ymin = rep(field_width - 6 - 2, 101),
+        ymax = rep(field_width - 6 + 2, 101))) |> 
+      dplyr::bind_rows(
+        # South side of the table
+        dplyr::tibble(
+          line = "hash_mark",
+          xmin = seq(endzone_length, field_length + endzone_length, by = 3),
+          xmax = xmin,
+          ymin = rep(6 - 2, 101),
+          ymax = rep(6 + 2, 101)))
+
+# Yard line numbers every 10 yards, 12 yards from the sidelines and 1 ft long
+numbers <-
+  dplyr::tibble(
+    xmin = rep(seq(endzone_length + 30, field_length, by = 30), 2),
+    ymin = c(rep(numbers_distance, 9), rep(field_width - numbers_distance, 9)),
+    label = rep(c(seq(10, 50, by = 10), seq(40, 10, by = -10)), 2))
+```
+
+
+Football field visualization
+
+```{r drawing actual plot}
+all_field_lines <- field_measurements |> 
+  dplyr::bind_rows(widthwise_lines) |> 
+  dplyr::bind_rows(hash_lines)
+
+# Field visualization
+all_field_lines |> 
+  ggplot() + 
+    annotate(
+      "rect", xmin = 0, xmax = total_length,
+      ymin = 0, ymax = field_width, fill = "darkgreen") + 
+    # Lines
+    geom_segment(
+      data = dplyr::filter(all_field_lines, stringr::str_detect(line, "boundary")),
+      aes(x = xmin, xend = xmax, y = ymin, yend = ymax),
+        color = "white", linewidth = 1) + 
+    geom_segment(
+      data = dplyr::filter(all_field_lines, stringr::str_detect(line, "goal_line")),
+      aes(x = xmin, xend = xmax, y = ymin, yend = ymax),
+        color = "white", linewidth = 1) + 
+    geom_segment(
+      data = dplyr::filter(all_field_lines, line == "yard_line"),
+      aes(x = xmin, xend = xmax, y = ymin, yend = ymax),
+        color = "white", linewidth = 0.5) + 
+    geom_segment(
+      data = dplyr::filter(all_field_lines, line == "hash_mark"),
+      aes(x = xmin, xend = xmax, y = ymin, yend = ymax),
+        color = "white", linewidth = 0.25) + 
+    # Numbers
+    geom_text(
+      data = numbers,
+      aes(x = xmin, y = ymin, label = label), color = "white", size = 8, fontface = "bold") + 
+    theme_void() + 
+    # Set a dark background for the entire plot to make the field stand out
+    theme(plot.background = element_rect(fill = "gray20")) + 
+    coord_fixed(ratio = 1)
+```
+
+
+```{r}
+  # `geom_segment` to draw the field lines
+geom_segment(data = filter(field_elements_df, line_type == "end_line"),
+   aes(x = x, xend = xend, y = y, yend = yend), color = "white", linewidth = 1) +
+geom_segment(data = filter(field_elements_df, line_type == "goal_line"),
+   aes(x = x, xend = xend, y = y, yend = yend), color = "white", linewidth = 1) +
+geom_segment(data = filter(field_elements_df, line_type == "yard_line"),
+   aes(x = x, xend = xend, y = y, yend = yend), color = "white", linewidth = 0.5) +
+geom_segment(data = filter(field_elements_df, line_type == "hash_mark"),
+   aes(x = x, xend = xend, y = y, yend = yend), color = "white", linewidth = 0.25) +
+
+  # Add the yard line numbers using geom_text
+  geom_text(data = numbers_df, aes(x = x, y = y, label = label), color = "white", size = 8, fontface = "bold") +
+  
+  # Add the end zone text with specified rotation
+  geom_text(data = endzone_text_df, aes(x = x, y = y, label = label, angle = angle), color = "white", size = 10, fontface = "bold") +
+  
+
+```
+
+
+```{r}
+full_lines <- field_length / 15
+total_field_length <- field_length + (endzone_length * 2)
+
+# Map field by drawing coordinates for field "corners" (including endzones)
+corner1 <- c(0, 0)
+corner2 <- c(total_field_length, 0)
+corner3 <- c(0, field_width)
+corner4 <- c(total_field_length, field_width)
+
+seq(from = 0, to = total_field_length, by = 15)
+seq(0, field_length, by = full_lines)
+```
+
+
+
+Mahomes as an example
+
+```{r mahomes df}
+mahomes <- pbp_df |> 
+  dplyr::filter(
+    passer == "P.Mahomes"
+    & season == 2023) |> 
+    #(pass_attempt == 1 | play_type == "pass")
+    #& penalty == 0
+    #& two_point_attempt == 0) |> 
+  dplyr::group_by(passer, game_id) |> 
+  dplyr::summarize(
+    complete_pass = sum(complete_pass),
+    pass_attempt = sum(pass_attempt),
+    passing_yards = sum(passing_yards),
+    complete_pct = sum(complete_pass) / sum(pass_attempt)) |> 
+  dplyr::arrange(desc(game_id))
+```
+
+
+
+
+-------------------------------------------------------------------------
+
+
+
+
+
+
+
+```{r}
+pbp_df |> 
+  dplyr::mutate(passing_yards = dplyr::coalesce(passing_yards, 0)) |> 
+  dplyr::filter(passer == "P.Mahomes" & season == 2024) |> 
+  dplyr::filter(
+    (pass_attempt == 1 | play_type == "pass")
+    & penalty == 0
+    & two_point_attempt == 0) |> 
+  dplyr::group_by(passer, game_id) |> 
+  dplyr::summarize(
+    complete_pass = sum(complete_pass),
+    pass_attempt = sum(pass_attempt),
+    passing_yards = sum(passing_yards),
+    complete_pct = sum(complete_pass) / sum(pass_attempt)) |> 
+  dplyr::arrange(desc(game_id))
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+Group by game and passer (after filtering for passing yards)
+
+```{r}
+top_passers <- pbp_df |> 
+  dplyr::filter(play_type == "pass" & !is.na(passing_yards)) |> 
+  dplyr::group_by(game_id, passer) |> 
+  dplyr::summarize(pass_yds = sum(passing_yards)) |> 
+  dplyr::arrange(desc(pass_yds))
+```
+
+```{r}
+passers <- dplyr::group_by(pbp_df, season, passer)
+passers |> 
+  dplyr::summarize(
+    total_pass_yds = sum(passing_yards)) |> 
+  dplyr::arrange(desc(total_pass_yds))
+
+# pass vs pass_attempt
+#ggplot2::ggplot(pbp_df, aes(pass, pass_attempt)) +
+#  geom_point()
+  
+```
+
+
+```{python}
+
+```
+
+
+
+```{python}
+"""["season", "season_type", "week",
+"complete_pass", "incomplete_pass", "pass_length",
+"receiver", "receiving_yards",
+"pass_attempt", "passer", "passing_yards", "pass",
+"rush_attempt", "rusher", "rushing_yards", "rush",
+
+"touchdown", "td_team", "td_player_name",
+"interception", "sack",
+#"receiver_touchdown",
+"pass_touchdown", "rush_touchdown",
+"field_goal_attempt", "field_goal_result", "kick_distance", "kicker_player_name",
+"extra_point_attempt", "extra_point_result", 
+"two_point_attempt", "two_point_conv_result",
+"kickoff_attempt", "kickoff_returner_player_name",
+
+"drive", "first_down",
+"play_id", "play_type", "yards_gained", "ydstogo",
+"home_team", "away_team",
+"timeout", "timeout_team", "penalty_team"]"""
+
+"""
+  dplyr::select(
+    time, play_type, down, play_id, drive, qtr,
+    yrdln, yardline_100, yards_gained, ydstogo,
+    posteam, defteam,
+    passer, complete_pass, pass_attempt, passing_yards,
+    receiver, receiving_yards,
+    rusher, rush_attempt, rushing_yards,
+
+    desc, penalty, penalty_team,
+    season_type, game_id, game_date, season) |> 
+"""
+```
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
