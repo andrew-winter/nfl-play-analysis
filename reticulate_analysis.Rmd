@@ -62,7 +62,7 @@ pbp_dtypes <- py$pbp_dtypes
 Set up metadata for a play-by-play dataframe, `pbp_df`
 
 ```{python metadata}
-year_min = 2021
+year_min = 2019
 year_max = 2024
 pbp_df = pd.DataFrame()
 # Reduce hundreds of columns to tens
@@ -107,6 +107,7 @@ for yr in range(year_min, year_max + 1):
     # Collected data dictionary in part to map `pandas` dtypes
     df = pd.read_csv(file, dtype=pbp_dtypes, usecols=pbp_columns)
     pbp_df = pd.concat([pbp_df, df], ignore_index=True)
+
 ```
 
 
@@ -122,129 +123,8 @@ pbp_df <- py$pbp_df |>
 ```
 
 
-Check passing stats against each other
 
-```{r passing comparison}
-# Various combinations of pass and pass attempt, so check each
-pbp_df |> 
-  dplyr::select(pass, pass_attempt) |> 
-  dplyr::group_by(pass, pass_attempt) |> 
-  dplyr::count() |> 
-  dplyr::arrange(desc(n))
-
-#   pass pass_attempt      n
-#   <dbl>       <dbl>  <int>
-# 1  0            0 269554    runs, special teams, timeouts, QB kneels, penalt
-# 2  1            1 222229    pass plays (including penalties & 2 pt attempts)
-# 3  1            0  22522    mostly pass plays with penalty or QB scrambles
-# 4  0          NaN  15733    mostly start + end of quarters, some penalties
-# 5  0            1    780    spikes
-# 6  1          NaN    414    penalties
-
-pbp_df |> 
-  dplyr::filter(pass == 0 & pass_attempt == 0) |> 
-  dplyr::select(play_type) |> 
-  dplyr::group_by(play_type) |> 
-  dplyr::count() |> 
-  dplyr::arrange(desc(n))
-```
-
-
-```{r pass filtering}
-# Will combining the filters without penalties be enough?
-# penalty == 0      477358
-# penalty == 1      37727
-# is.na(penalty)    16147
-pbp_df |> 
-  dplyr::group_by(penalty) |> 
-  dplyr::select(penalty) |> 
-  dplyr::count() |> 
-  dplyr::arrange(desc(n))
-
-# `pass_attempt` and no penalties should determine legitimate pass attempts
-# There are some plays where pass_attempt == 1 & pass == 0, but these are
-# spikes and therefore should count as pass attempts
-pbp_df |> 
-  dplyr::filter(pass_attempt == 1 & penalty == 0) |> 
-  select("yardline_100", "ydstogo", "yards_gained", "yrdln")
-```
-
-
-```{r plays grouped}
-# Group by every single play
-# group_by(season, season_type, game_id, qtr, drive, play_id, play_type, desc)
-pbp_grouped <- pbp_df |> 
-  dplyr::group_by(
-    season, season_type, game_id, qtr,
-    time, drive, play_id, play_type, desc) |> 
-  dplyr::select(
-    season_type, game_id,
-    qtr, time, drive, play_id, play_type, desc) |> 
-  dplyr::arrange(game_id, play_id)
-```
-
-
-```{r look through plays}
-pbp_grouped |> 
-  dplyr::ungroup() |> 
-  #dplyr::select() |>
-  dplyr::filter(game_id == "2023_21_KC_BAL") |>  # Alt: 2024_01_BAL_KC
-  base::print()
-#purrr::map_chr(pbp_grouped$desc, print)
-#tidyr::pivot_wider(names_from = cols_to_pivot, values_from = vals_to_pivot)
-```
-
-
-Determine which values to filter out to get to passing stats
-
-```{r}
-pbp_df |> 
-  dplyr::filter(pass_attempt == 1 | play_type == "pass") |> 
-  dplyr::group_by(passer, game_id) |> 
-  dplyr::summarize(
-    pass_att = sum(pass_attempt),
-    pass_comp = sum(complete_pass),
-    pass_yards = sum(passing_yards)) |> 
-  dplyr::arrange(desc(pass_att))
-```
-
-
-By updating passing_yards NAs to zeroes, can aggregate stats per passer per game
-
-```{r}
-pbp_df |> 
-  dplyr::filter(
-    passer == "P.Mahomes"
-    & season == 2023) |> 
-  dplyr::group_by(pass_attempt, play_type, penalty) |> 
-  dplyr::select(pass_attempt, play_type, penalty) |> 
-  dplyr::count() |> 
-  dplyr::arrange(n)
-
-#   pass_attempt play_type penalty     n
-#          <dbl> <chr>       <dbl> <int>
-# 1            0 run             1     3    scramble, penalty enforced at end
-# 2          NaN no_play       NaN     3
-# 3            1 pass            1    11
-# 4            0 no_play         1    51
-# 5            0 run             0    60
-# 6            1 pass            0   765
-
-df <- pbp_df |> 
-  dplyr::filter(
-    passer == "P.Mahomes"
-    & season == 2023) |> 
-  dplyr::filter(
-    pass_attempt == 0
-    & play_type == "run"
-    & penalty == 1) |> 
-  dplyr::select(
-    pass_attempt, play_type, penalty, penalty_yards, yards_gained,
-    yrdln, yardline_100, penalty_team, desc)
-
-df
-```
-
+### Football Field Visualization
 
 Attempt to draw a football field
 
@@ -401,6 +281,132 @@ seq(0, field_length, by = full_lines)
 
 
 
+
+### Misc Code
+
+Check passing stats against each other
+
+```{r passing comparison}
+# Various combinations of pass and pass attempt, so check each
+pbp_df |> 
+  dplyr::select(pass, pass_attempt) |> 
+  dplyr::group_by(pass, pass_attempt) |> 
+  dplyr::count() |> 
+  dplyr::arrange(desc(n))
+
+#   pass pass_attempt      n
+#   <dbl>       <dbl>  <int>
+# 1  0            0 269554    runs, special teams, timeouts, QB kneels, penalt
+# 2  1            1 222229    pass plays (including penalties & 2 pt attempts)
+# 3  1            0  22522    mostly pass plays with penalty or QB scrambles
+# 4  0          NaN  15733    mostly start + end of quarters, some penalties
+# 5  0            1    780    spikes
+# 6  1          NaN    414    penalties
+
+pbp_df |> 
+  dplyr::filter(pass == 0 & pass_attempt == 0) |> 
+  dplyr::select(play_type) |> 
+  dplyr::group_by(play_type) |> 
+  dplyr::count() |> 
+  dplyr::arrange(desc(n))
+```
+
+
+```{r pass filtering}
+# Will combining the filters without penalties be enough?
+# penalty == 0      477358
+# penalty == 1      37727
+# is.na(penalty)    16147
+pbp_df |> 
+  dplyr::group_by(penalty) |> 
+  dplyr::select(penalty) |> 
+  dplyr::count() |> 
+  dplyr::arrange(desc(n))
+
+# `pass_attempt` and no penalties should determine legitimate pass attempts
+# There are some plays where pass_attempt == 1 & pass == 0, but these are
+# spikes and therefore should count as pass attempts
+pbp_df |> 
+  dplyr::filter(pass_attempt == 1 & penalty == 0) |> 
+  select("yardline_100", "ydstogo", "yards_gained", "yrdln")
+```
+
+
+```{r plays grouped}
+# Group by every single play
+# group_by(season, season_type, game_id, qtr, drive, play_id, play_type, desc)
+pbp_grouped <- pbp_df |> 
+  dplyr::group_by(
+    season, season_type, game_id, qtr,
+    time, drive, play_id, play_type, desc) |> 
+  dplyr::select(
+    season_type, game_id,
+    qtr, time, drive, play_id, play_type, desc) |> 
+  dplyr::arrange(game_id, play_id)
+```
+
+
+```{r look through plays}
+pbp_grouped |> 
+  dplyr::ungroup() |> 
+  #dplyr::select() |>
+  dplyr::filter(game_id == "2023_21_KC_BAL") |>  # Alt: 2024_01_BAL_KC
+  base::print()
+#purrr::map_chr(pbp_grouped$desc, print)
+#tidyr::pivot_wider(names_from = cols_to_pivot, values_from = vals_to_pivot)
+```
+
+
+Determine which values to filter out to get to passing stats
+
+```{r}
+pbp_df |> 
+  dplyr::filter(pass_attempt == 1 | play_type == "pass") |> 
+  dplyr::group_by(passer, game_id) |> 
+  dplyr::summarize(
+    pass_att = sum(pass_attempt),
+    pass_comp = sum(complete_pass),
+    pass_yards = sum(passing_yards)) |> 
+  dplyr::arrange(desc(pass_att))
+```
+
+
+By updating passing_yards NAs to zeroes, can aggregate stats per passer per game
+
+```{r}
+pbp_df |> 
+  dplyr::filter(
+    passer == "P.Mahomes"
+    & season == 2023) |> 
+  dplyr::group_by(pass_attempt, play_type, penalty) |> 
+  dplyr::select(pass_attempt, play_type, penalty) |> 
+  dplyr::count() |> 
+  dplyr::arrange(n)
+
+#   pass_attempt play_type penalty     n
+#          <dbl> <chr>       <dbl> <int>
+# 1            0 run             1     3    scramble, penalty enforced at end
+# 2          NaN no_play       NaN     3
+# 3            1 pass            1    11
+# 4            0 no_play         1    51
+# 5            0 run             0    60
+# 6            1 pass            0   765
+
+df <- pbp_df |> 
+  dplyr::filter(
+    passer == "P.Mahomes"
+    & season == 2023) |> 
+  dplyr::filter(
+    pass_attempt == 0
+    & play_type == "run"
+    & penalty == 1) |> 
+  dplyr::select(
+    pass_attempt, play_type, penalty, penalty_yards, yards_gained,
+    yrdln, yardline_100, penalty_team, desc)
+
+df
+```
+
 Mahomes as an example
 
 ```{r mahomes df}
@@ -420,17 +426,6 @@ mahomes <- pbp_df |>
   dplyr::arrange(desc(game_id))
 ```
 
-
-
-
--------------------------------------------------------------------------
-
-
-
-
-
-
-
 ```{r}
 pbp_df |> 
   dplyr::mutate(passing_yards = dplyr::coalesce(passing_yards, 0)) |> 
@@ -449,18 +444,7 @@ pbp_df |>
 ```
 
 
-```{r}
-```
 
-
-```{r}
-```
-
-```{r}
-```
-
-```{r}
-```
 Group by game and passer (after filtering for passing yards)
 
 ```{r}
@@ -485,61 +469,3 @@ passers |>
 ```
 
 
-```{python}
-
-```
-
-
-
-```{python}
-"""["season", "season_type", "week",
-"complete_pass", "incomplete_pass", "pass_length",
-"receiver", "receiving_yards",
-"pass_attempt", "passer", "passing_yards", "pass",
-"rush_attempt", "rusher", "rushing_yards", "rush",
-
-"touchdown", "td_team", "td_player_name",
-"interception", "sack",
-#"receiver_touchdown",
-"pass_touchdown", "rush_touchdown",
-"field_goal_attempt", "field_goal_result", "kick_distance", "kicker_player_name",
-"extra_point_attempt", "extra_point_result", 
-"two_point_attempt", "two_point_conv_result",
-"kickoff_attempt", "kickoff_returner_player_name",
-
-"drive", "first_down",
-"play_id", "play_type", "yards_gained", "ydstogo",
-"home_team", "away_team",
-"timeout", "timeout_team", "penalty_team"]"""
-
-"""
-  dplyr::select(
-    time, play_type, down, play_id, drive, qtr,
-    yrdln, yardline_100, yards_gained, ydstogo,
-    posteam, defteam,
-    passer, complete_pass, pass_attempt, passing_yards,
-    receiver, receiving_yards,
-    rusher, rush_attempt, rushing_yards,
-
-    desc, penalty, penalty_team,
-    season_type, game_id, game_date, season) |> 
-"""
-```
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
-```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

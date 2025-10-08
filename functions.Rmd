@@ -1,0 +1,126 @@
+---
+title: "NFL play-by-play data functional programming"
+author: "Andrew Winter"
+date: "2025-10-07"
+output:
+  html_document:
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Simple functions, complex NFL play-by-play data
+
+I have explored [nflverse](https://github.com/nflverse) pbp data [a few times](https://github.com/andrew-winter/nfl-play-analysis), so today I'll try to standardize different parts of the analysis with functions, namely
+
+1. Load R and Python packages
+2. Confirm metadata definitions are accurate
+3. Select variables for analysis
+4. Read data season by season, possibly concatenate
+5. Visualize
+
+```{r packages, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(stringr)
+library(reticulate)
+```
+
+```{python modules, message=FALSE}
+import json
+import os
+import pandas as pd
+import re
+import requests
+from bs4 import BeautifulSoup
+from scripts.read_nflverse_dictionary import read_nflverse_dictionary
+from scripts.select_variables import select_variables
+```
+
+Write out existing Python code before delving into R code
+
+```{python metadata}
+year_min = 2013
+year_max = 2025
+
+# Confirm working data dictionary
+try:
+    data_dictionary = read_nflverse_dictionary()
+    pbp_dtypes = {
+      dy["field"]: dy["pdtype"]
+      for dy
+      in data_dictionary.to_dict("records")}
+except:
+    data_dictionary = pd.DataFrame()
+    pbp_dtypes = {}
+
+# Reduce hundreds of pbp columns to tens
+pbp_columns = select_variables()
+```
+
+```{python iterate read_csv}
+pbp_df = pd.DataFrame()
+for yr in range(year_min, year_max + 1):
+    file = os.path.join(os.getcwd(), "data", "pbp", f"play_by_play_{yr}.csv")
+    # Collected data dictionary in part to map `pandas` dtypes
+    df = pd.read_csv(file, dtype=pbp_dtypes, usecols=pbp_columns)
+    pbp_df = pd.concat([pbp_df, df], ignore_index=True)
+```
+
+```{r data dictionary py_to_r}
+# Convert data dictionary from Python to R
+data_dictionary <- py$data_dictionary |> 
+  reticulate::py_to_r() |> 
+  dplyr::as_tibble()
+pbp_dtypes <- py$pbp_dtypes
+```
+
+```{r pbp py_to_r}
+# Convert play-by-play data from Python to R
+pbp_df <- py$pbp_df |> 
+  reticulate::py_to_r() |> 
+  dplyr::as_tibble() |> 
+  dplyr::relocate(
+    reticulate::py_to_r(py$pbp_columns))
+```
+
+```{r groups}
+# "Divide up" the seasons, games, season types, etc
+pbp_drives <- pbp_df |> 
+  dplyr::group_by(season, season_type, game_id, qtr, posteam, drive) |> 
+  dplyr::summarize(plays = n()) |> 
+  dplyr::arrange(desc(season), desc(season_type), game_id, qtr, drive)
+
+# Kansas City 2025 season example
+#kc_2025 <- dplyr::filter(pbp_drives, posteam == "KC" & season == 2025)
+```
+
+```{r one game example, include=FALSE}
+# Let's narrow it down to one game's drives
+game <- dplyr::filter(pbp_drives, game_id == "2025_04_BAL_KC")
+drive <- pbp_df |> 
+  dplyr::filter(game_id == "2025_04_BAL_KC" & drive == 2) |> 
+  dplyr::select(drive, play_id, play_type, yrdln, yards_gained, ydstogo, desc) |> 
+  dplyr::arrange(drive, play_id)
+```
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
