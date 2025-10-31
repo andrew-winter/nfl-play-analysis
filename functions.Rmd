@@ -1,14 +1,14 @@
 ---
 title: "NFL play-by-play data functional programming"
 author: "Andrew Winter"
-date: "2025-10-07"
+date: "2025-10-30"
 output:
   html_document:
     theme: flatly
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, results = "hide")
 ```
 
 ## Simple functions, complex NFL play-by-play data
@@ -43,7 +43,7 @@ from scripts.select_variables import select_variables
 Write out existing Python code before delving into R code
 
 ```{python metadata}
-year_min = 2013
+year_min = 2016
 year_max = 2025
 
 # Confirm working data dictionary
@@ -87,29 +87,56 @@ pbp_df <- py$pbp_df |>
     reticulate::py_to_r(py$pbp_columns))
 ```
 
-```{r groups}
+```{r groups, include=FALSE}
 # "Divide up" the seasons, games, season types, etc
 pbp_drives <- pbp_df |> 
-  dplyr::group_by(season, season_type, game_id, qtr, posteam, drive) |> 
+  dplyr::group_by(season, season_type, week, game_id, qtr, posteam, drive) |> 
   dplyr::summarize(plays = n()) |> 
   dplyr::arrange(desc(season), desc(season_type), game_id, qtr, drive)
 
 # Kansas City 2025 season example
-#kc_2025 <- dplyr::filter(pbp_drives, posteam == "KC" & season == 2025)
-```
+kc_2025 <- dplyr::filter(pbp_drives, posteam == "KC" & season == 2025)
+# New York Jets 2025 Week 8 game example
+jets <- dplyr::filter(pbp_df, game_id == "2025_08_NYJ_CIN")
 
-```{r one game example, include=FALSE}
-# Let's narrow it down to one game's drives
-game <- dplyr::filter(pbp_drives, game_id == "2025_04_BAL_KC")
-drive <- pbp_df |> 
-  dplyr::filter(game_id == "2025_04_BAL_KC" & drive == 2) |> 
+jets |> 
   dplyr::select(drive, play_id, play_type, yrdln, yards_gained, ydstogo, desc) |> 
   dplyr::arrange(drive, play_id)
 ```
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r confirm key quarter metadata, include=FALSE}
+# For one game ID, identify plays at the start of the game and end of each quarter
+id_game_bookmarks <- function(df) {
+  if (all(c("desc", "play_id") %in% colnames(jets))) {
+    # Bookmarks to determine game start and end of each quarter
+    book1 <- dplyr::filter(df, desc == "GAME")
+    book2 <- dplyr::filter(df, 
+                           stringr::str_detect(desc, 
+                                               regex("END QUARTER \\d")))
+    book3 <- dplyr::filter(df, desc == "END GAME")
+    
+    # Benchmarks to determine bookmarks are relative indicators of play_id
+    bench1 <- book1$play_id == min(df$play_id)
+    print(glue::glue("BENCHMARK 1:\t{bench1}\t\t\t(start of the game)"))
+    bench2 <- (book2$play_id > min(df$play_id)) & (book2$play_id < max(df$play_id))
+    print(glue::glue("BENCHMARK 2:\t{bench2}\t\t\t(end of quarters 1-3)"))
+    bench3 <- book3$play_id == max(df$play_id)
+    print(glue::glue("BENCHMARK 3:\t{bench3}\t\t\t(end of the game)"))
+    
+    benchmarks <- all(c(bench1, bench2, bench3))
+    if (benchmarks) {
+      dplyr::bind_rows(book1, book2, book3) #|> 
+        #dplyr::select(play_id, desc, play_type, drive)
+    }
+  }
+}
+jets_bookmarks <- id_game_bookmarks(jets)
+```
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+``` {r summarize drives, include=FALSE}
+pbp_drives
+```
+
 
 ```{r cars}
 summary(cars)
